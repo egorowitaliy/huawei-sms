@@ -1,0 +1,121 @@
+<?php
+
+declare(strict_types=1);
+
+return [
+    'app' => [
+        'name' => 'Huawei SMS',
+        'base_url' => 'https://sms.example.org',
+        'timezone' => 'Europe/Moscow',
+        'force_secure_cookie' => true,
+        'trusted_proxies' => [],
+    ],
+
+    'auth' => [
+        'enabled' => true,
+        'username' => 'admin',
+        'password_hash' => 'ВСТАВЬТЕ_ХЕШ_ИЗ_bin/password-hash.php',
+        'session_lifetime' => 900,
+        'max_login_attempts' => 5,
+        'login_block_seconds' => 900,
+        'login_attempt_retention_days' => 30,
+    ],
+
+    'totp' => [
+        'enabled' => false,
+        'secret' => '',
+        'emergency_bypass' => false,
+    ],
+
+    'modem' => [
+        'url' => 'http://192.168.8.1',
+        'timeout' => 8,
+        'monitor' => [
+            'enabled' => true,
+            'failure_threshold' => 3,
+            'recovery_threshold' => 2,
+            'notification_retry_seconds' => 300,
+            'offline_log_interval' => 1800,
+            'maintenance_log_interval' => 300,
+            'include_error_in_notification' => true,
+        ],
+        'auto_reboot' => [
+            'enabled' => false,
+            'time' => '04:10',
+            'days_of_week' => [7],
+            'window_minutes' => 15,
+            'maintenance_seconds' => 600,
+            'notify_started' => true,
+            'notify_completed' => true,
+        ],
+    ],
+
+    'sms_commands' => [
+        'enabled' => true,
+        'trusted_phones' => [],
+        'reply_chunk_chars' => 420,
+        'reply_retry_max_attempts' => 10,
+        'reply_retry_interval_seconds' => 60,
+        'processing_stale_seconds' => 300,
+    ],
+
+    'notifications' => [
+        'enabled' => false,
+        'connect_timeout' => 5,
+        'timeout' => 15,
+
+        'auth' => [
+            'login_success' => false,
+            'login_failed' => false,
+            'login_blocked' => false,
+            'csrf_failed' => false,
+            'csrf_notification_interval_seconds' => 300,
+        ],
+
+        'modem' => [
+            'offline' => true,
+            'online' => true,
+            'auto_reboot_started' => true,
+            'auto_reboot_completed' => true,
+        ],
+
+        'telegram' => [
+            'enabled' => false,
+            'bot_token' => '',
+            'bot_token_file' => __DIR__ . '/secrets/telegram-token',
+            'chat_id' => '',
+            'proxy' => [
+                'enabled' => false,
+                'url' => '',
+                'username' => '',
+                'password' => '',
+                'type' => 'http',
+                'fallback_direct' => false,
+            ],
+        ],
+
+        'matrix' => [
+            'enabled' => false,
+            'homeserver' => 'https://matrix.example.org',
+            'room_id' => '',
+            'access_token' => '',
+            'access_token_file' => __DIR__ . '/secrets/matrix-token',
+        ],
+
+        'max' => [
+            'enabled' => false,
+            'api_url' => 'https://platform-api2.max.ru/messages',
+            'token' => '',
+            'token_file' => __DIR__ . '/secrets/max-token',
+            'chat_id' => '',
+            'proxy' => [
+                'enabled' => false,
+                'url' => '',
+                'username' => '',
+                'password' => '',
+                'type' => 'http',
+                'fallback_direct' => false,
+            ],
+        ],
+    ],
+];

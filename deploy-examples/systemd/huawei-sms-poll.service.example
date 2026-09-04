@@ -1,0 +1,22 @@
+[Unit]
+Description=Huawei SMS modem poll
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/srv/huawei-sms
+ExecStart=/usr/bin/php /srv/huawei-sms/cron/poll.php
+TimeoutStartSec=360
+Nice=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/huawei-sms/data /srv/huawei-sms/logs
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+RestrictRealtime=true

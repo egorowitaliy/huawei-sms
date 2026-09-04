@@ -1,0 +1,28 @@
+server {
+    listen 80;
+    server_name sms.example.org;
+
+    root /srv/huawei-sms/public;
+    index index.php;
+
+    client_max_body_size 1m;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location = /index.php {
+        include /etc/nginx/fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param HTTP_PROXY "";
+        fastcgi_pass unix:/run/php/huawei-sms.sock;
+    }
+
+    location ~ \.php$ {
+        return 404;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+}

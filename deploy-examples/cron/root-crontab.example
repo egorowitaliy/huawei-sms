@@ -1,0 +1,5 @@
+# Обычная установка на хосте
+* * * * * runuser -u www-data -- /usr/bin/php /srv/huawei-sms/cron/poll.php >/dev/null 2>&1
+
+# Пример для PHP-контейнера с bind mount проекта в /var/www/huawei-sms
+* * * * * docker exec -u www-data huawei-sms-php php /var/www/huawei-sms/cron/poll.php >/dev/null 2>&1
