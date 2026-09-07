@@ -2,6 +2,65 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/quick_login.php';
+
+function notify_html_escape(
+    string $value
+): string {
+    return htmlspecialchars(
+        $value,
+        ENT_QUOTES | ENT_SUBSTITUTE,
+        'UTF-8'
+    );
+}
+
+function notify_message_with_open_link(
+    string $channel,
+    string $prefix
+): array {
+    $link =
+        quick_login_open_link(
+            $channel
+        );
+
+    $visibleUrl =
+        (string)$link['visible_url'];
+
+    $targetUrl =
+        (string)$link['target_url'];
+
+    $text =
+        $prefix .
+        $visibleUrl;
+
+    $html =
+        notify_html_escape($prefix) .
+        '<a href="' .
+        notify_html_escape($targetUrl) .
+        '">' .
+        notify_html_escape($visibleUrl) .
+        '</a>';
+
+    /*
+     * Matrix использует HTML formatted_body.
+     * Telegram и MAX сохраняют обычные переводы строк.
+     */
+    if ($channel === 'matrix') {
+        $html = str_replace(
+            "\n",
+            "<br>\n",
+            $html
+        );
+    }
+
+    return [
+        'text' => $text,
+        'html' => $html,
+        'quick_login' =>
+            !empty($link['quick_login']),
+    ];
+}
+
 function notify_read_secret(
     array $channel,
     string $valueKey,
@@ -117,7 +176,6 @@ function notify_curl_attempt(
                     (string)($proxy['type'] ?? 'http')
                 );
             } catch (Throwable $exception) {
-                curl_close($ch);
 
                 return [
                     'ok' => false,
@@ -172,7 +230,6 @@ function notify_curl_attempt(
         CURLINFO_RESPONSE_CODE
     );
 
-    curl_close($ch);
 
     return [
         'ok' =>
@@ -649,8 +706,8 @@ function notify_send_transport(
     return false;
 }
 
-function notify_send(
-    string $text,
+function notify_dispatch_messages(
+    callable $builder,
     string $event = ''
 ): bool {
     global $config;
@@ -674,6 +731,24 @@ function notify_send(
         return false;
     }
 
+    $dispatchId =
+        notify_make_dispatch_id();
+
+    app_log(
+        'INFO notification_dispatch' .
+        ' dispatch_id="' .
+        app_log_clean($dispatchId) .
+        '"' .
+        ' event="' .
+        app_log_clean(trim($event)) .
+        '"' .
+        ' channels="' .
+        app_log_clean(
+            implode(',', $channels)
+        ) .
+        '"'
+    );
+
     $hadPreviousContext =
         array_key_exists(
             'notify_log_context',
@@ -684,89 +759,89 @@ function notify_send(
         $GLOBALS['notify_log_context']
         ?? null;
 
-    $GLOBALS['notify_log_context'] = [
-        'dispatch_id' =>
-            notify_make_dispatch_id(),
-
-        'event' =>
-            trim($event),
-
-        'message_sha256' =>
-            hash(
-                'sha256',
-                $text
-            ),
-
-        'message_bytes' =>
-            strlen($text),
-    ];
+    $sent = [];
+    $failed = [];
 
     try {
-        app_log(
-            'INFO notification_dispatch' .
-            notify_log_context_suffix() .
-            ' channels="' .
-            app_log_clean(
-                implode(
-                    ',',
-                    $channels
-                )
-            ) .
-            '"'
-        );
+        foreach ($channels as $channel) {
+            try {
+                $message =
+                    $builder($channel);
 
-        $sent = [];
-        $failed = [];
+                if (!is_array($message)) {
+                    throw new RuntimeException(
+                        'Notification builder returned invalid value'
+                    );
+                }
 
-        foreach (
-            $channels
-            as $channel
-        ) {
-            if (
-                notify_send_channel(
-                    $channel,
-                    $text
-                )
-            ) {
-                $sent[] =
-                    $channel;
+                $text = (string)(
+                    $message['text']
+                    ?? ''
+                );
+
+                $html =
+                    isset($message['html'])
+                    && is_string($message['html'])
+                        ? $message['html']
+                        : null;
+
+                $hashSource =
+                    $text .
+                    "\0" .
+                    ($html ?? '');
+
+                $GLOBALS['notify_log_context'] = [
+                    'dispatch_id' =>
+                        $dispatchId,
+
+                    'event' =>
+                        trim($event),
+
+                    /*
+                     * В журнал попадает только хеш сообщения.
+                     * Одноразовая ссылка и сам токен не записываются.
+                     */
+                    'message_sha256' =>
+                        hash(
+                            'sha256',
+                            $hashSource
+                        ),
+
+                    'message_bytes' =>
+                        strlen($text)
+                        + strlen($html ?? ''),
+                ];
+
+                $ok =
+                    notify_send_channel(
+                        $channel,
+                        $text,
+                        $html
+                    );
+            } catch (Throwable $exception) {
+                app_log(
+                    'ERROR notification_build_failed' .
+                    ' channel=' .
+                    $channel .
+                    ' dispatch_id="' .
+                    app_log_clean($dispatchId) .
+                    '"' .
+                    ' error="' .
+                    app_log_clean(
+                        $exception->getMessage()
+                    ) .
+                    '"'
+                );
+
+                $ok = false;
+            }
+
+            if ($ok) {
+                $sent[] = $channel;
             } else {
-                $failed[] =
-                    $channel;
+                $failed[] = $channel;
             }
         }
-
-        if ($sent === []) {
-            $level = 'ERROR';
-        } elseif ($failed !== []) {
-            $level = 'WARN';
-        } else {
-            $level = 'INFO';
-        }
-
-        app_log(
-            $level .
-            ' notification_dispatch_result' .
-            notify_log_context_suffix() .
-            ' sent="' .
-            app_log_clean(
-                implode(
-                    ',',
-                    $sent
-                )
-            ) .
-            '"' .
-            ' failed="' .
-            app_log_clean(
-                implode(
-                    ',',
-                    $failed
-                )
-            ) .
-            '"'
-        );
-
-        return $failed === [];
     } finally {
         if ($hadPreviousContext) {
             $GLOBALS['notify_log_context'] =
@@ -777,10 +852,71 @@ function notify_send(
             );
         }
     }
+
+    $level =
+        $sent === []
+            ? 'ERROR'
+            : (
+                $failed === []
+                    ? 'INFO'
+                    : 'WARN'
+            );
+
+    app_log(
+        $level .
+        ' notification_dispatch_result' .
+        ' dispatch_id="' .
+        app_log_clean($dispatchId) .
+        '"' .
+        ' event="' .
+        app_log_clean(trim($event)) .
+        '"' .
+        ' sent="' .
+        app_log_clean(
+            implode(',', $sent)
+        ) .
+        '"' .
+        ' failed="' .
+        app_log_clean(
+            implode(',', $failed)
+        ) .
+        '"'
+    );
+
+    return $failed === [];
 }
 
-function tg_send(string $text): bool
-{
+function notify_send(
+    string $text,
+    string $event = ''
+): bool {
+    return notify_dispatch_messages(
+        static fn(string $channel): array => [
+            'text' => $text,
+            'html' => null,
+        ],
+        $event
+    );
+}
+
+function notify_send_with_open_link(
+    string $prefix,
+    string $event = ''
+): bool {
+    return notify_dispatch_messages(
+        static fn(string $channel): array =>
+            notify_message_with_open_link(
+                $channel,
+                $prefix
+            ),
+        $event
+    );
+}
+
+function tg_send(
+    string $text,
+    ?string $htmlText = null
+): bool {
     global $config;
 
     $tg = (array)(
@@ -841,11 +977,21 @@ function tg_send(string $text): bool
             $chatId,
 
         'text' =>
-            $text,
+            $htmlText !== null
+                ? $htmlText
+                : $text,
 
-        'disable_web_page_preview' =>
-            true,
+        /*
+         * Современный Bot API использует LinkPreviewOptions.
+         */
+        'link_preview_options' =>
+            '{"is_disabled":true}',
     ];
+
+    if ($htmlText !== null) {
+        $payload['parse_mode'] =
+            'HTML';
+    }
 
     $options = [
         CURLOPT_POST =>
@@ -902,8 +1048,10 @@ function tg_send(string $text): bool
     );
 }
 
-function matrix_send(string $text): bool
-{
+function matrix_send(
+    string $text,
+    ?string $htmlText = null
+): bool {
     global $config;
 
     $mx = (array)(
@@ -954,11 +1102,21 @@ function matrix_send(string $text): bool
             random_bytes(12)
         );
 
+        $message = [
+            'msgtype' => 'm.text',
+            'body' => $text,
+        ];
+
+        if ($htmlText !== null) {
+            $message['format'] =
+                'org.matrix.custom.html';
+
+            $message['formatted_body'] =
+                $htmlText;
+        }
+
         $payload = json_encode(
-            [
-                'msgtype' => 'm.text',
-                'body' => $text,
-            ],
+            $message,
             JSON_UNESCAPED_UNICODE |
             JSON_UNESCAPED_SLASHES |
             JSON_THROW_ON_ERROR
@@ -1027,8 +1185,10 @@ function matrix_send(string $text): bool
     );
 }
 
-function max_send(string $text): bool
-{
+function max_send(
+    string $text,
+    ?string $htmlText = null
+): bool {
     global $config;
 
     $mx = (array)(
@@ -1075,11 +1235,20 @@ function max_send(string $text): bool
     }
 
     try {
+        $message = [
+            'text' =>
+                $htmlText !== null
+                    ? $htmlText
+                    : $text,
+        ];
+
+        if ($htmlText !== null) {
+            $message['format'] =
+                'html';
+        }
+
         $payload = json_encode(
-            [
-                'text' =>
-                    $text,
-            ],
+            $message,
             JSON_UNESCAPED_UNICODE |
             JSON_UNESCAPED_SLASHES |
             JSON_THROW_ON_ERROR
@@ -1101,7 +1270,8 @@ function max_send(string $text): bool
     $url =
         $apiUrl .
         '?chat_id=' .
-        rawurlencode($chatId);
+        rawurlencode($chatId) .
+        '&disable_link_preview=true';
 
     $options = [
         CURLOPT_POST =>
@@ -1186,17 +1356,27 @@ function notify_enabled_channels(): array
 
 function notify_send_channel(
     string $channel,
-    string $text
+    string $text,
+    ?string $htmlText = null
 ): bool {
     return match ($channel) {
         'telegram' =>
-            tg_send($text),
+            tg_send(
+                $text,
+                $htmlText
+            ),
 
         'matrix' =>
-            matrix_send($text),
+            matrix_send(
+                $text,
+                $htmlText
+            ),
 
         'max' =>
-            max_send($text),
+            max_send(
+                $text,
+                $htmlText
+            ),
 
         default =>
             false,
@@ -1272,15 +1452,6 @@ function mask_phone(string $phone): string
 function sms_notification_text(
     array $inbox
 ): string {
-    global $config;
-
-    $url =
-        rtrim(
-            (string)$config['app']['base_url'],
-            '/'
-        ) .
-        '/';
-
     $count =
         count($inbox);
 
@@ -1308,8 +1479,7 @@ function sms_notification_text(
             "🕒 Дата: " .
             $date .
             "\n\n" .
-            "🔗 Открыть:\n" .
-            $url;
+            "🔗 Открыть:\n";
     }
 
     return
@@ -1317,8 +1487,7 @@ function sms_notification_text(
         "🔢 Количество: " .
         $count .
         "\n\n" .
-        "🔗 Открыть:\n" .
-        $url;
+        "🔗 Открыть:\n";
 }
 
 function sms_notification_channel_sent(
@@ -1576,17 +1745,14 @@ function sms_notify_batch(
             $pendingByChannel
             as $channel => $channelInbox
         ) {
-            $text =
-                sms_notification_text(
-                    $channelInbox
-                );
+            $sent = false;
+            $deliveryError =
+                'Channel delivery failed';
 
             /*
-             * dispatch_id общий для этого прохода batch.
-             *
-             * message_sha256/message_bytes рассчитываются
-             * отдельно для каждого канала, потому что при retry
-             * набор SMS для Telegram/Matrix/MAX может отличаться.
+             * Сбрасываем контекст в начале каждой итерации,
+             * чтобы ошибка построения quick-link не унаследовала
+             * hash предыдущего канала.
              */
             $GLOBALS['notify_log_context'] = [
                 'dispatch_id' =>
@@ -1596,19 +1762,91 @@ function sms_notify_batch(
                     'new_sms',
 
                 'message_sha256' =>
-                    hash(
-                        'sha256',
-                        $text
-                    ),
+                    '',
 
                 'message_bytes' =>
-                    strlen($text),
+                    0,
             ];
 
-            $sent = notify_send_channel(
-                $channel,
-                $text
-            );
+            try {
+                $message =
+                    notify_message_with_open_link(
+                        $channel,
+                        sms_notification_text(
+                            $channelInbox
+                        )
+                    );
+
+                $text =
+                    (string)$message['text'];
+
+                $html =
+                    (string)$message['html'];
+
+                /*
+                 * dispatch_id общий для этого прохода batch.
+                 *
+                 * message_sha256/message_bytes рассчитываются
+                 * отдельно для каждого канала, потому что при retry
+                 * набор SMS для Telegram/Matrix/MAX может отличаться.
+                 */
+                $GLOBALS['notify_log_context'] = [
+                    'dispatch_id' =>
+                        $dispatchId,
+
+                    'event' =>
+                        'new_sms',
+
+                    'message_sha256' =>
+                        hash(
+                            'sha256',
+                            $text .
+                            "\0" .
+                            $html
+                        ),
+
+                    'message_bytes' =>
+                        strlen($text)
+                        + strlen($html),
+                ];
+
+                $sent = notify_send_channel(
+                    $channel,
+                    $text,
+                    $html
+                );
+
+                if ($sent) {
+                    $deliveryError = null;
+                }
+            } catch (Throwable $exception) {
+                /*
+                 * Ошибка одного транспорта или создания его
+                 * quick-link не должна прерывать fan-out.
+                 */
+                $deliveryError =
+                    'Channel exception';
+
+                app_log(
+                    'ERROR notification_sms_channel_exception' .
+                    ' channel=' .
+                    app_log_clean($channel) .
+                    ' dispatch_id="' .
+                    app_log_clean($dispatchId) .
+                    '"' .
+                    ' event="new_sms"' .
+                    ' exception="' .
+                    app_log_clean(
+                        $exception::class
+                    ) .
+                    '"' .
+                    ' error_sha256=' .
+                    hash(
+                        'sha256',
+                        $exception->getMessage()
+                    )
+                );
+            }
 
             if ($sent) {
                 $sentChannels[] =
@@ -1633,14 +1871,39 @@ function sms_notify_batch(
                     continue;
                 }
 
-                sms_notification_record_delivery(
-                    $fingerprint,
-                    $channel,
-                    $sent,
-                    $sent
-                        ? null
-                        : 'Channel delivery failed'
-                );
+                try {
+                    sms_notification_record_delivery(
+                        $fingerprint,
+                        $channel,
+                        $sent,
+                        $deliveryError
+                    );
+                } catch (Throwable $exception) {
+                    /*
+                     * Ошибка записи delivery-state также не должна
+                     * мешать попытке доставки в следующий канал.
+                     * Не записанная отметка будет повторена poll.
+                     */
+                    app_log(
+                        'ERROR notification_sms_delivery_state_failed' .
+                        ' channel=' .
+                        app_log_clean($channel) .
+                        ' dispatch_id="' .
+                        app_log_clean($dispatchId) .
+                        '"' .
+                        ' event="new_sms"' .
+                        ' exception="' .
+                        app_log_clean(
+                            $exception::class
+                        ) .
+                        '"' .
+                        ' error_sha256=' .
+                        hash(
+                            'sha256',
+                            $exception->getMessage()
+                        )
+                    );
+                }
             }
         }
     } finally {
@@ -1766,13 +2029,6 @@ function auth_notify(
         $labels[$event]
         ?? 'Событие авторизации';
 
-    $url =
-        rtrim(
-            (string)$config['app']['base_url'],
-            '/'
-        ) .
-        '/';
-
     $username =
         app_log_clean(
             $username
@@ -1799,7 +2055,7 @@ function auth_notify(
         )
     );
 
-    $text =
+    $prefix =
         "🔐 " .
         $appName .
         "\n\n" .
@@ -1818,11 +2074,10 @@ function auth_notify(
                     "\n"
                 : ''
         ) .
-        "\n🔗 Открыть:\n" .
-        $url;
+        "\n🔗 Открыть:\n";
 
-    notify_send(
-        $text,
+    notify_send_with_open_link(
+        $prefix,
         'auth_' . $event
     );
 }

@@ -107,6 +107,29 @@ if (!empty($config['auth']['enabled'])) {
     $warnings[] = 'Веб-авторизация отключена';
 }
 
+$quickLogin =
+    (array)(
+        $config['auth']['quick_login']
+        ?? []
+    );
+
+if (!empty($quickLogin['enabled'])) {
+    $quickLoginTtl =
+        (int)(
+            $quickLogin['token_ttl_seconds']
+            ?? 86400
+        );
+
+    if (
+        $quickLoginTtl < 300
+        || $quickLoginTtl > 604800
+    ) {
+        $errors[] =
+            'auth.quick_login.token_ttl_seconds должен быть ' .
+            'в диапазоне 300–604800 секунд';
+    }
+}
+
 $trustedPhones = (array)($config['sms_commands']['trusted_phones'] ?? []);
 
 if (!empty($config['sms_commands']['enabled']) && $trustedPhones === []) {

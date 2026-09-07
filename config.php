@@ -19,6 +19,16 @@ $defaults = [
         'max_login_attempts' => 5,
         'login_block_seconds' => 900,
         'login_attempt_retention_days' => 30,
+
+        'quick_login' => [
+            'enabled' => false,
+            'token_ttl_seconds' => 86400,
+            'channels' => [
+                'telegram' => false,
+                'matrix' => false,
+                'max' => false,
+            ],
+        ],
     ],
 
     'totp' => [

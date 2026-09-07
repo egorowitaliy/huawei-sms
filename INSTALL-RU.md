@@ -38,7 +38,7 @@ apt install php-fpm php-cli php-curl php-mbstring php-sqlite3 php-xml sqlite3 py
 
 ```bash
 mkdir -p /srv/huawei-sms
-tar -xzf huawei-sms-1.0.0.tar.gz --strip-components=1 -C /srv/huawei-sms
+tar -xzf huawei-sms-1.0.1.tar.gz --strip-components=1 -C /srv/huawei-sms
 ```
 
 Внешнему веб-серверу должен быть доступен только:
@@ -269,10 +269,10 @@ runuser -u www-data -- php /srv/huawei-sms/bin/preflight.php
 data/sms.sqlite
 ```
 
-Схема создаётся автоматически. Для Huawei SMS 1.0.0 используется:
+Схема создаётся автоматически. Для Huawei SMS 1.0.1 используется:
 
 ```text
-PRAGMA user_version = 5
+PRAGMA user_version = 6
 ```
 
 Повторный запуск безопасен: существующая актуальная база не создаётся заново.

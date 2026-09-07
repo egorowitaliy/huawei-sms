@@ -3,10 +3,28 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../init.php';
+require_once __DIR__ . '/../quick_login.php';
 require_once __DIR__ . '/../sms_commands.php';
 require_once __DIR__ . '/../modem_monitor.php';
 
 try {
+    /*
+     * Удаление просроченных ссылок не должно мешать
+     * основной задаче опроса модема.
+     */
+    try {
+        quick_login_cleanup();
+    } catch (Throwable $exception) {
+        app_log(
+            'WARN quick_login_cleanup_failed' .
+            ' error="' .
+            app_log_clean(
+                $exception->getMessage()
+            ) .
+            '"'
+        );
+    }
+
     modem_monitor_retry_pending_events();
 
     $added = sync_sms_from_modem(true);

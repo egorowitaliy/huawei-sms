@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/notify.php';
+require_once __DIR__ . '/quick_login.php';
 
 function auth_current_ip(): string {
     global $config;
@@ -341,7 +342,39 @@ function auth_handle_login(): void {
 
     $totp = $config['totp'] ?? [];
 
-    if (!empty($totp['enabled']) && empty($totp['emergency_bypass'])) {
+    $quickLoginToken = trim(
+        (string)(
+            $_POST['quick_login_token']
+            ?? ''
+        )
+    );
+
+    $quickLoginAccepted = false;
+
+    if ($quickLoginToken !== '') {
+        $quickLoginAccepted =
+            quick_login_consume_token(
+                $quickLoginToken
+            );
+
+        if (!$quickLoginAccepted) {
+            auth_log(
+                'quick_login_failed',
+                $username
+            );
+
+            render_login_page(
+                'Ссылка быстрого входа недействительна или уже использована'
+            );
+            exit;
+        }
+    }
+
+    if (
+        !empty($totp['enabled'])
+        && empty($totp['emergency_bypass'])
+        && !$quickLoginAccepted
+    ) {
         $totpCode = trim((string)($_POST['totp'] ?? ''));
         $totpSecret = (string)($totp['secret'] ?? '');
 
@@ -443,6 +476,7 @@ function render_login_page(string $error = '', bool $timeout = false): void {
             <form method="post">
                 <input type="hidden" name="action" value="login">
                 <input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
+                <input type="hidden" name="quick_login_token" id="quick-login-token" value="">
 
                 <label>Логин</label>
                 <input name="username" autocomplete="username" required>
@@ -451,12 +485,100 @@ function render_login_page(string $error = '', bool $timeout = false): void {
                 <input name="password" type="password" autocomplete="current-password" required>
 
                 <?php if ($totpEnabled): ?>
-                    <label>Код 2FA</label>
-                    <input name="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required>
+                    <div id="totp-field">
+                        <label>Код 2FA</label>
+                        <input
+                            name="totp"
+                            inputmode="numeric"
+                            autocomplete="one-time-code"
+                            maxlength="6"
+                            pattern="[0-9]{6}"
+                            required
+                        >
+                    </div>
                 <?php endif; ?>
 
                 <button type="submit">Войти</button>
             </form>
+
+            <script>
+            (() => {
+                const handleQuickLoginFragment = () => {
+                    const params = new URLSearchParams(
+                        window.location.hash.replace(/^#/, '')
+                    );
+
+                    if (!params.has('access')) {
+                        return;
+                    }
+
+                    const token =
+                        params.get('access') || '';
+
+                    const hidden =
+                        document.getElementById(
+                            'quick-login-token'
+                        );
+
+                    const totp =
+                        document.querySelector(
+                            'input[name="totp"]'
+                        );
+
+                    const field =
+                        document.getElementById(
+                            'totp-field'
+                        );
+
+                    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
+                        if (hidden) {
+                            hidden.value = '';
+                        }
+
+                        if (totp) {
+                            totp.required = true;
+                        }
+
+                        if (field) {
+                            field.hidden = false;
+                        }
+
+                        return;
+                    }
+
+                    if (hidden) {
+                        hidden.value = token;
+                    }
+
+                    if (totp) {
+                        totp.required = false;
+                    }
+
+                    if (field) {
+                        field.hidden = true;
+                    }
+
+                    history.replaceState(
+                        null,
+                        '',
+                        window.location.pathname +
+                        window.location.search
+                    );
+                };
+
+                handleQuickLoginFragment();
+
+                window.addEventListener(
+                    'hashchange',
+                    handleQuickLoginFragment
+                );
+
+                window.addEventListener(
+                    'pageshow',
+                    handleQuickLoginFragment
+                );
+            })();
+            </script>
         </main>
     </body>
     </html>

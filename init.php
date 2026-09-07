@@ -152,8 +152,6 @@ function db(): PDO
         $pdo = new PDO('sqlite:' . $dbPath);
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-        $pdo->exec('PRAGMA journal_mode = WAL');
-        $pdo->exec('PRAGMA synchronous = NORMAL');
         $pdo->exec('PRAGMA busy_timeout = 5000');
         $pdo->exec('PRAGMA foreign_keys = ON');
 
@@ -161,13 +159,34 @@ function db(): PDO
             ->query('PRAGMA user_version')
             ->fetchColumn();
 
-        if ($currentSchemaVersion > 5) {
+        if ($currentSchemaVersion > 6) {
             throw new RuntimeException(
                 'Database schema version ' .
                 $currentSchemaVersion .
-                ' is newer than supported version 5'
+                ' is newer than supported version 6'
             );
         }
+
+        if (
+            !in_array(
+                $currentSchemaVersion,
+                [0, 5, 6],
+                true
+            )
+        ) {
+            throw new RuntimeException(
+                'Unsupported database schema version ' .
+                $currentSchemaVersion .
+                '; upgrade is supported from schema 5'
+            );
+        }
+
+        /*
+         * Persistent/runtime SQLite settings применяем только после
+         * подтверждения поддерживаемой версии схемы.
+         */
+        $pdo->exec('PRAGMA journal_mode = WAL');
+        $pdo->exec('PRAGMA synchronous = NORMAL');
 
         $pdo->exec("
             CREATE TABLE IF NOT EXISTS sms (
@@ -346,7 +365,79 @@ function db(): PDO
               AND reply_chunks_json IS NULL
         ");
 
-        $pdo->exec('PRAGMA user_version = 5');
+        /*
+         * Новая установка сразу создаётся как schema 6.
+         * Для опубликованной версии 1.0.0 предусмотрен
+         * единственный переход schema 5 -> schema 6.
+         */
+        if ($currentSchemaVersion === 0) {
+            $pdo->beginTransaction();
+
+            try {
+                $pdo->exec("
+                    CREATE TABLE auth_quick_login_tokens (
+                        token_hash TEXT PRIMARY KEY,
+                        channel TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        expires_at INTEGER NOT NULL
+                    )
+                ");
+
+                $pdo->exec("
+                    CREATE INDEX ix_auth_quick_login_expires
+                    ON auth_quick_login_tokens(expires_at)
+                ");
+
+                $pdo->exec(
+                    'PRAGMA user_version = 6'
+                );
+
+                $pdo->commit();
+                $currentSchemaVersion = 6;
+            } catch (Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+
+                throw $exception;
+            }
+        } elseif ($currentSchemaVersion === 5) {
+            $pdo->beginTransaction();
+
+            try {
+                $pdo->exec("
+                    CREATE TABLE auth_quick_login_tokens (
+                        token_hash TEXT PRIMARY KEY,
+                        channel TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        expires_at INTEGER NOT NULL
+                    )
+                ");
+
+                $pdo->exec("
+                    CREATE INDEX ix_auth_quick_login_expires
+                    ON auth_quick_login_tokens(expires_at)
+                ");
+
+                $pdo->exec(
+                    'PRAGMA user_version = 6'
+                );
+
+                $pdo->commit();
+            } catch (Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+
+                throw $exception;
+            }
+        } elseif ($currentSchemaVersion !== 6) {
+            throw new RuntimeException(
+                'Unsupported database schema version ' .
+                $currentSchemaVersion .
+                '; upgrade is supported from schema 5'
+            );
+        }
 
         return $pdo;
     } catch (Throwable $exception) {
@@ -577,7 +668,6 @@ function http_request(string $method, string $url, ?string $body = null, array $
     $response = curl_exec($ch);
     $error = curl_error($ch);
     $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    curl_close($ch);
 
     if ($response === false) {
         throw new ModemApiException($error !== '' ? $error : 'Modem request failed');

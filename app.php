@@ -177,6 +177,45 @@ function app_render_page(string $tab, array $status, array $items, ?array $curre
         <script>
             window.APP_SESSION_LIFETIME = <?= $sessionLifetime ?>;
         </script>
+        <script>
+        (() => {
+            const handleQuickLoginFragment = () => {
+                const params = new URLSearchParams(
+                    window.location.hash.replace(/^#/, '')
+                );
+
+                if (!params.has('access')) {
+                    return;
+                }
+
+                const token =
+                    params.get('access') || '';
+
+                if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
+                    return;
+                }
+
+                history.replaceState(
+                    null,
+                    '',
+                    window.location.pathname +
+                    window.location.search
+                );
+            };
+
+            handleQuickLoginFragment();
+
+            window.addEventListener(
+                'hashchange',
+                handleQuickLoginFragment
+            );
+
+            window.addEventListener(
+                'pageshow',
+                handleQuickLoginFragment
+            );
+        })();
+        </script>
         <script src="/assets/app.js" defer></script>
     </head>
 
