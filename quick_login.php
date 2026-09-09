@@ -22,7 +22,7 @@ function quick_login_ttl(): int
             604800,
             (int)(
                 $cfg['token_ttl_seconds']
-                ?? 86400
+                ?? 1800
             )
         )
     );

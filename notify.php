@@ -2076,8 +2076,18 @@ function auth_notify(
         ) .
         "\n🔗 Открыть:\n";
 
-    notify_send_with_open_link(
-        $prefix,
+    $openUrl =
+        rtrim(
+            (string)(
+                $config['app']['base_url']
+                ?? ''
+            ),
+            '/'
+        ) .
+        '/';
+
+    notify_send(
+        $prefix . $openUrl,
         'auth_' . $event
     );
 }

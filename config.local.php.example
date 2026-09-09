@@ -22,7 +22,7 @@ return [
 
         'quick_login' => [
             'enabled' => false,
-            'token_ttl_seconds' => 86400,
+            'token_ttl_seconds' => 1800,
             'channels' => [
                 'telegram' => false,
                 'matrix' => false,
@@ -35,6 +35,9 @@ return [
         'enabled' => false,
         'secret' => '',
         'emergency_bypass' => false,
+        'max_failed_attempts' => 10,
+        'failure_window_seconds' => 600,
+        'global_block_seconds' => 900,
     ],
 
     'modem' => [

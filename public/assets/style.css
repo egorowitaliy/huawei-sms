@@ -319,6 +319,7 @@ textarea {
 .alert.error {
     border-color: #fecaca;
     color: var(--danger);
+    text-align: center;
 }
 
 .idle-warning {

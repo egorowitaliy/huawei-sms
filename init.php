@@ -545,12 +545,22 @@ function login_attempts_cleanup(): void
     )->execute([time() - ($days * 86400)]);
 }
 
-function login_blocked(string $key): bool
+function login_blocked_until(string $key): int
 {
-    $stmt = db()->prepare('SELECT blocked_until FROM login_attempts WHERE attempt_key = ?');
+    $stmt = db()->prepare(
+        'SELECT blocked_until
+         FROM login_attempts
+         WHERE attempt_key = ?'
+    );
+
     $stmt->execute([$key]);
 
-    return (int)($stmt->fetchColumn() ?: 0) > time();
+    return (int)($stmt->fetchColumn() ?: 0);
+}
+
+function login_blocked(string $key): bool
+{
+    return login_blocked_until($key) > time();
 }
 
 function login_failed(string $key, string $ip, string $userAgent): bool
@@ -560,37 +570,38 @@ function login_failed(string $key, string $ip, string $userAgent): bool
     login_attempts_cleanup();
 
     $pdo = db();
-    $now = time();
     $max = max(1, (int)$config['auth']['max_login_attempts']);
     $block = max(1, (int)$config['auth']['login_block_seconds']);
 
-    /*
-     * Две параллельные попытки входа не должны терять счётчик.
-     * BEGIN IMMEDIATE сериализует короткое чтение-изменение-запись.
-     */
     $pdo->exec('BEGIN IMMEDIATE');
 
     try {
+        $now = time();
         $stmt = $pdo->prepare(
-            'SELECT attempts FROM login_attempts WHERE attempt_key = ?'
+            'SELECT attempts, blocked_until FROM login_attempts WHERE attempt_key = ?'
         );
         $stmt->execute([$key]);
-        $attempts = (int)($stmt->fetchColumn() ?: 0) + 1;
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $attempts = is_array($row) ? (int)($row['attempts'] ?? 0) : 0;
+        $blockedUntil = is_array($row) ? (int)($row['blocked_until'] ?? 0) : 0;
+
+        if ($blockedUntil > $now) {
+            $pdo->commit();
+            return true;
+        }
+
+        $attempts++;
         $blockedUntil = 0;
 
         if ($attempts >= $max) {
-            $blockedUntil = $now + $block;
             $attempts = 0;
+            $blockedUntil = $now + $block;
         }
 
         $stmt = $pdo->prepare("
             INSERT INTO login_attempts(
-                attempt_key,
-                ip,
-                user_agent,
-                attempts,
-                blocked_until,
-                updated_at
+                attempt_key, ip, user_agent, attempts, blocked_until, updated_at
             )
             VALUES(?, ?, ?, ?, ?, ?)
             ON CONFLICT(attempt_key) DO UPDATE SET
@@ -600,26 +611,17 @@ function login_failed(string $key, string $ip, string $userAgent): bool
                 blocked_until = excluded.blocked_until,
                 updated_at = excluded.updated_at
         ");
-        $stmt->execute([
-            $key,
-            $ip,
-            $userAgent,
-            $attempts,
-            $blockedUntil,
-            $now,
-        ]);
-
+        $stmt->execute([$key, $ip, $userAgent, $attempts, $blockedUntil, $now]);
         $pdo->commit();
-
-        return $blockedUntil > 0;
+        return $blockedUntil > $now;
     } catch (Throwable $exception) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
         }
-
         throw $exception;
     }
 }
+
 
 function login_success(string $key): void
 {

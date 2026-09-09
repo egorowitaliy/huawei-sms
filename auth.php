@@ -195,6 +195,242 @@ function totp_verify(string $secret, string $code): bool {
     }
 }
 
+function auth_totp_global_limits(): array
+{
+    global $config;
+
+    return [
+        'max' =>
+            max(
+                1,
+                min(
+                    100,
+                    (int)(
+                        $config['totp']['max_failed_attempts']
+                        ?? 10
+                    )
+                )
+            ),
+
+        'window' =>
+            max(
+                60,
+                min(
+                    86400,
+                    (int)(
+                        $config['totp']['failure_window_seconds']
+                        ?? 600
+                    )
+                )
+            ),
+
+        'block' =>
+            max(
+                60,
+                min(
+                    86400,
+                    (int)(
+                        $config['totp']['global_block_seconds']
+                        ?? 900
+                    )
+                )
+            ),
+    ];
+}
+
+function auth_totp_global_decode_state(
+    string $raw
+): array {
+    try {
+        $state = json_decode(
+            $raw,
+            true,
+            16,
+            JSON_THROW_ON_ERROR
+        );
+    } catch (Throwable) {
+        $state = [];
+    }
+
+    if (!is_array($state)) {
+        $state = [];
+    }
+
+    return [
+        'attempts' =>
+            max(
+                0,
+                (int)(
+                    $state['attempts']
+                    ?? 0
+                )
+            ),
+
+        'window_started_at' =>
+            max(
+                0,
+                (int)(
+                    $state['window_started_at']
+                    ?? 0
+                )
+            ),
+
+        'blocked_until' =>
+            max(
+                0,
+                (int)(
+                    $state['blocked_until']
+                    ?? 0
+                )
+            ),
+    ];
+}
+
+function auth_totp_global_block_remaining(): int
+{
+    $stmt = db()->prepare(
+        'SELECT value
+         FROM app_state
+         WHERE key = ?'
+    );
+
+    $stmt->execute([
+        'auth_totp_global_failures',
+    ]);
+
+    $raw = $stmt->fetchColumn();
+
+    if ($raw === false) {
+        return 0;
+    }
+
+    $state =
+        auth_totp_global_decode_state(
+            (string)$raw
+        );
+
+    return max(
+        0,
+        (int)$state['blocked_until'] - time()
+    );
+}
+
+function auth_totp_global_failure(): bool
+{
+    $limits = auth_totp_global_limits();
+    $pdo = db();
+    $now = time();
+    $key = 'auth_totp_global_failures';
+
+    $pdo->exec('BEGIN IMMEDIATE');
+
+    try {
+        $stmt = $pdo->prepare(
+            'SELECT value
+             FROM app_state
+             WHERE key = ?'
+        );
+
+        $stmt->execute([$key]);
+
+        $raw = $stmt->fetchColumn();
+
+        $state =
+            auth_totp_global_decode_state(
+                $raw === false
+                    ? ''
+                    : (string)$raw
+            );
+
+        if (
+            (int)$state['blocked_until'] > $now
+        ) {
+            $pdo->commit();
+            return false;
+        }
+
+        if (
+            (int)$state['blocked_until'] > 0
+            && (int)$state['blocked_until'] <= $now
+        ) {
+            $state = [
+                'attempts' => 0,
+                'window_started_at' => $now,
+                'blocked_until' => 0,
+            ];
+        }
+
+        if (
+            (int)$state['window_started_at'] <= 0
+            || (
+                $now
+                - (int)$state['window_started_at']
+            ) >= (int)$limits['window']
+        ) {
+            $state['attempts'] = 0;
+            $state['window_started_at'] = $now;
+            $state['blocked_until'] = 0;
+        }
+
+        $state['attempts'] =
+            (int)$state['attempts'] + 1;
+
+        $becameBlocked = false;
+
+        if (
+            (int)$state['attempts']
+            >= (int)$limits['max']
+        ) {
+            $state['attempts'] = 0;
+            $state['window_started_at'] = $now;
+            $state['blocked_until'] =
+                $now + (int)$limits['block'];
+
+            $becameBlocked = true;
+        }
+
+        $stmt = $pdo->prepare("
+            INSERT INTO app_state(
+                key,
+                value,
+                updated_at
+            )
+            VALUES(?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+        ");
+
+        $stmt->execute([
+            $key,
+            json_encode(
+                $state,
+                JSON_THROW_ON_ERROR
+            ),
+            date('Y-m-d H:i:s'),
+        ]);
+
+        $pdo->commit();
+
+        return $becameBlocked;
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+
+        throw $exception;
+    }
+}
+
+function auth_totp_global_reset(): void
+{
+    db()->prepare(
+        'DELETE FROM app_state WHERE key = ?'
+    )->execute([
+        'auth_totp_global_failures',
+    ]);
+}
+
 function auth_csrf_notification_allowed(string $ip): bool {
     global $config;
 
@@ -276,78 +512,200 @@ function auth_handle_logout(): void {
     }
 }
 
+function render_login_blocked_page(
+    int $retryAfter
+): void {
+    $retryAfter =
+        max(
+            1,
+            $retryAfter
+        );
+
+    http_response_code(429);
+
+    header(
+        'Retry-After: ' .
+        $retryAfter
+    );
+
+    ?>
+    <!doctype html>
+    <html lang="ru">
+    <head>
+        <meta charset="utf-8">
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1"
+        >
+        <meta name="robots" content="noindex,nofollow">
+        <title>Авторизация</title>
+        <link rel="stylesheet" href="/assets/style.css">
+    </head>
+    <body class="login-page">
+        <main class="login-box">
+            <h1>Авторизация</h1>
+
+            <div class="alert error">
+                Вход временно заблокирован из-за нескольких
+                неудачных попыток. Попробуй позже.
+            </div>
+        </main>
+    </body>
+    </html>
+    <?php
+}
+
 function auth_handle_login(): void {
     global $config;
 
-    if ($_SERVER['REQUEST_METHOD'] !== 'POST' || ($_POST['action'] ?? '') !== 'login') {
+    if (
+        $_SERVER['REQUEST_METHOD'] !== 'POST'
+        || ($_POST['action'] ?? '') !== 'login'
+    ) {
         return;
     }
 
-    $token = $_POST['csrf_token'] ?? '';
-    $username = trim((string)($_POST['username'] ?? ''));
+    $token =
+        $_POST['csrf_token']
+        ?? '';
 
-    if (!is_string($token) || !hash_equals((string)($_SESSION['csrf_token'] ?? ''), $token)) {
+    $username =
+        trim(
+            (string)(
+                $_POST['username']
+                ?? ''
+            )
+        );
+
+    if (
+        !is_string($token)
+        || !hash_equals(
+            (string)(
+                $_SESSION['csrf_token']
+                ?? ''
+            ),
+            $token
+        )
+    ) {
         $ip = auth_current_ip();
         $userAgent = auth_user_agent();
 
-        auth_log('csrf_failed', $username);
+        auth_log(
+            'csrf_failed',
+            $username
+        );
 
-        if (auth_csrf_notification_allowed($ip)) {
-            auth_notify('csrf_failed', $ip, $username, $userAgent);
+        if (
+            auth_csrf_notification_allowed(
+                $ip
+            )
+        ) {
+            auth_notify(
+                'csrf_failed',
+                $ip,
+                $username,
+                $userAgent
+            );
         }
 
-        render_login_page('Сессия формы устарела. Обнови страницу и попробуй ещё раз');
+        render_login_page(
+            'Сессия формы устарела. Обнови страницу и попробуй ещё раз'
+        );
         exit;
     }
 
     $key = auth_attempt_key();
     $ip = auth_current_ip();
     $userAgent = auth_user_agent();
-    $password = (string)($_POST['password'] ?? '');
 
-    if (login_blocked($key)) {
-        auth_log('blocked', $username);
+    $password =
+        (string)(
+            $_POST['password']
+            ?? ''
+        );
 
-        /*
-         * Уведомление о блокировке отправляется в момент, когда лимит
-         * достигнут. Последующие запросы во время той же блокировки только
-         * пишутся в журнал и не создают поток одинаковых уведомлений.
-         */
-        render_login_page('Слишком много попыток. Попробуй позже');
-        exit;
-    }
+    $passwordValid =
+        password_verify(
+            $password,
+            (string)(
+                $config['auth']['password_hash']
+                ?? ''
+            )
+        );
+
+    $usernameValid =
+        hash_equals(
+            (string)(
+                $config['auth']['username']
+                ?? ''
+            ),
+            $username
+        );
 
     $passwordOk =
-        hash_equals((string)$config['auth']['username'], $username) &&
-        password_verify($password, (string)$config['auth']['password_hash']);
+        $usernameValid
+        && $passwordValid;
 
     if (!$passwordOk) {
-        $becameBlocked = login_failed($key, $ip, $userAgent);
+        $becameBlocked =
+            login_failed(
+                $key,
+                $ip,
+                $userAgent
+            );
 
         if ($becameBlocked) {
-            auth_log('blocked', $username);
-            auth_notify('blocked', $ip, $username, $userAgent);
+            auth_log(
+                'blocked',
+                $username
+            );
+
+            auth_notify(
+                'blocked',
+                $ip,
+                $username,
+                $userAgent
+            );
+
+            render_login_blocked_page(
+                max(
+                    1,
+                    login_blocked_until($key)
+                    - time()
+                )
+            );
         } else {
-            auth_log('failed', $username);
-            auth_notify('failed', $ip, $username, $userAgent);
+            auth_log(
+                'failed',
+                $username
+            );
+
+            auth_notify(
+                'failed',
+                $ip,
+                $username,
+                $userAgent
+            );
+
+            render_login_page(
+                'Неверные данные входа'
+            );
         }
 
-        render_login_page(
-            $becameBlocked
-                ? 'Слишком много попыток. Попробуй позже'
-                : 'Неверный логин или пароль'
-        );
         exit;
     }
 
-    $totp = $config['totp'] ?? [];
+    $totp =
+        $config['totp']
+        ?? [];
 
-    $quickLoginToken = trim(
-        (string)(
-            $_POST['quick_login_token']
-            ?? ''
-        )
-    );
+    $quickLoginToken =
+        trim(
+            (string)(
+                $_POST['quick_login_token']
+                ?? ''
+            )
+        );
 
     $quickLoginAccepted = false;
 
@@ -358,14 +716,22 @@ function auth_handle_login(): void {
             );
 
         if (!$quickLoginAccepted) {
+            $blocked = login_failed($key, $ip, $userAgent);
+
             auth_log(
-                'quick_login_failed',
+                $blocked ? 'blocked' : 'quick_login_failed',
                 $username
             );
 
-            render_login_page(
-                'Ссылка быстрого входа недействительна или уже использована'
-            );
+            if ($blocked) {
+                auth_notify('blocked', $ip, $username, $userAgent);
+                render_login_blocked_page(
+                    max(1, login_blocked_until($key) - time())
+                );
+            } else {
+                render_login_page('Неверные данные входа');
+            }
+
             exit;
         }
     }
@@ -375,34 +741,119 @@ function auth_handle_login(): void {
         && empty($totp['emergency_bypass'])
         && !$quickLoginAccepted
     ) {
-        $totpCode = trim((string)($_POST['totp'] ?? ''));
-        $totpSecret = (string)($totp['secret'] ?? '');
+        if (
+            auth_totp_global_block_remaining()
+            > 0
+        ) {
+            $blocked = login_failed($key, $ip, $userAgent);
 
-        if (!totp_verify($totpSecret, $totpCode)) {
-            $becameBlocked = login_failed($key, $ip, $userAgent);
             auth_log(
-                $becameBlocked ? 'blocked' : 'totp_failed',
+                $blocked ? 'blocked' : 'totp_global_blocked',
                 $username
             );
+
+            if ($blocked) {
+                auth_notify('blocked', $ip, $username, $userAgent);
+                render_login_blocked_page(
+                    max(1, login_blocked_until($key) - time())
+                );
+            } else {
+                render_login_page('Неверные данные входа');
+            }
+
+            exit;
+        }
+
+        $totpCode =
+            trim(
+                (string)(
+                    $_POST['totp']
+                    ?? ''
+                )
+            );
+
+        $totpSecret =
+            (string)(
+                $totp['secret']
+                ?? ''
+            );
+
+        if (
+            !totp_verify(
+                $totpSecret,
+                $totpCode
+            )
+        ) {
+            $becameBlocked =
+                login_failed(
+                    $key,
+                    $ip,
+                    $userAgent
+                );
+
+            $totpBecameBlocked =
+                auth_totp_global_failure();
+
+            auth_log(
+                $becameBlocked
+                    ? 'blocked'
+                    : 'totp_failed',
+                $username
+            );
+
+            if ($totpBecameBlocked) {
+                auth_log(
+                    'totp_global_blocked',
+                    $username
+                );
+            }
+
             auth_notify(
-                $becameBlocked ? 'blocked' : 'failed',
+                (
+                    $becameBlocked
+                    || $totpBecameBlocked
+                )
+                    ? 'blocked'
+                    : 'failed',
                 $ip,
                 $username,
                 $userAgent
             );
 
-            render_login_page(
-                $becameBlocked
-                    ? 'Слишком много попыток. Попробуй позже'
-                    : 'Неверный код 2FA'
-            );
+            if ($becameBlocked) {
+                render_login_blocked_page(
+                    max(
+                        1,
+                        login_blocked_until(
+                            $key
+                        ) - time()
+                    )
+                );
+            } else {
+                render_login_page(
+                    'Неверные данные входа'
+                );
+            }
+
             exit;
         }
     }
 
+    auth_totp_global_reset();
+
     login_success($key);
-    auth_log('success', $username);
-    auth_notify('success', $ip, $username, $userAgent);
+
+    auth_log(
+        'success',
+        $username
+    );
+
+    auth_notify(
+        'success',
+        $ip,
+        $username,
+        $userAgent
+    );
 
     header('Location: /');
     exit;
@@ -411,16 +862,55 @@ function auth_handle_login(): void {
 function auth_bootstrap(): void {
     global $config;
 
-    if (empty($config['auth']['enabled'])) {
+    if (
+        empty(
+            $config['auth']['enabled']
+        )
+    ) {
         $_SESSION['auth'] = true;
-        $_SESSION['last_activity'] = time();
+        $_SESSION['last_activity'] =
+            time();
+
         csrf_token();
         return;
     }
 
     auth_handle_logout();
 
-    if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['timeout'])) {
+    $loginContext =
+        isset($_GET['login'])
+        || isset($_GET['timeout'])
+        || empty($_SESSION['auth']);
+
+    if ($loginContext) {
+        $key =
+            auth_attempt_key();
+
+        $blockedUntil =
+            login_blocked_until(
+                $key
+            );
+
+        if (
+            $blockedUntil > time()
+        ) {
+            auth_log('blocked');
+
+            render_login_blocked_page(
+                max(
+                    1,
+                    $blockedUntil - time()
+                )
+            );
+
+            exit;
+        }
+    }
+
+    if (
+        $_SERVER['REQUEST_METHOD'] === 'GET'
+        && isset($_GET['timeout'])
+    ) {
         auth_log('timeout');
 
         $_SESSION = [];
@@ -429,13 +919,22 @@ function auth_bootstrap(): void {
         session_start();
         csrf_token();
 
-        render_login_page('', true);
+        render_login_page(
+            '',
+            true
+        );
+
         exit;
     }
 
-    if (isset($_GET['login']) || empty($_SESSION['auth'])) {
+    if (
+        isset($_GET['login'])
+        || empty($_SESSION['auth'])
+    ) {
         auth_handle_login();
+
         render_login_page();
+
         exit;
     }
 

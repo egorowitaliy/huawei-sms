@@ -107,6 +107,53 @@ if (!empty($config['auth']['enabled'])) {
     $warnings[] = 'Веб-авторизация отключена';
 }
 
+if (!empty($config['totp']['enabled'])) {
+    $totpMaxFailed =
+        (int)(
+            $config['totp']['max_failed_attempts']
+            ?? 10
+        );
+
+    $totpWindow =
+        (int)(
+            $config['totp']['failure_window_seconds']
+            ?? 600
+        );
+
+    $totpGlobalBlock =
+        (int)(
+            $config['totp']['global_block_seconds']
+            ?? 900
+        );
+
+    if (
+        $totpMaxFailed < 1
+        || $totpMaxFailed > 100
+    ) {
+        $errors[] =
+            'totp.max_failed_attempts должен быть ' .
+            'в диапазоне 1–100';
+    }
+
+    if (
+        $totpWindow < 60
+        || $totpWindow > 86400
+    ) {
+        $errors[] =
+            'totp.failure_window_seconds должен быть ' .
+            'в диапазоне 60–86400 секунд';
+    }
+
+    if (
+        $totpGlobalBlock < 60
+        || $totpGlobalBlock > 86400
+    ) {
+        $errors[] =
+            'totp.global_block_seconds должен быть ' .
+            'в диапазоне 60–86400 секунд';
+    }
+}
+
 $quickLogin =
     (array)(
         $config['auth']['quick_login']
@@ -117,7 +164,7 @@ if (!empty($quickLogin['enabled'])) {
     $quickLoginTtl =
         (int)(
             $quickLogin['token_ttl_seconds']
-            ?? 86400
+            ?? 1800
         );
 
     if (

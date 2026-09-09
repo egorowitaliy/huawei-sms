@@ -136,7 +136,7 @@ unset P
 ```php
 'quick_login' => [
     'enabled' => true,
-    'token_ttl_seconds' => 86400,
+    'token_ttl_seconds' => 1800,
     'channels' => [
         'telegram' => true,
         'matrix' => false,
@@ -158,10 +158,10 @@ unset P
 Значение по умолчанию:
 
 ```text
-86400
+1800
 ```
 
-Это 24 часа.
+Это 30 минут.
 
 Допустимый диапазон — от `300` до `604800` секунд, то есть от 5 минут до 7 дней.
 
@@ -207,6 +207,8 @@ MAX      — быстрый вход
 
 Для Telegram и MAX предпросмотр страницы в таких уведомлениях отключается.
 
+Уведомления о событиях веб-авторизации всегда используют обычную ссылку и не создают quick-login token.
+
 ### Ручное создание ссылки из CLI
 
 Администратор может вручную создать одноразовую ссылку для разрешённого канала:
@@ -230,8 +232,27 @@ php /srv/huawei-sms/bin/quick-login-token.php telegram
     'enabled' => false,
     'secret' => '',
     'emergency_bypass' => false,
+    'max_failed_attempts' => 10,
+    'failure_window_seconds' => 600,
+    'global_block_seconds' => 900,
 ],
 ```
+
+Дополнительный глобальный limiter применяется только после успешной проверки логина и пароля:
+
+- `max_failed_attempts` — допустимое число неверных TOTP;
+- `failure_window_seconds` — окно подсчёта;
+- `global_block_seconds` — длительность блокировки.
+
+Значения по умолчанию:
+
+```text
+max_failed_attempts = 10
+failure_window_seconds = 600
+global_block_seconds = 900
+```
+
+Таким образом, 10 неверных TOTP за 10 минут блокируют дальнейшую проверку TOTP на 15 минут независимо от смены IP.
 
 Создать секрет:
 
