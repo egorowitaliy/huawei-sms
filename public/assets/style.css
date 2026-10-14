@@ -470,3 +470,28 @@ textarea {
     color: var(--danger);
     font-weight: 600;
 }
+
+/* Huawei SMS: desktop SMS panel with fixed 390px content height */
+@media (min-width: 761px) {
+    /* The shell must size to its content, not to the viewport. */
+    .app-shell:has(> .sms-layout) {
+        display: block;
+        height: auto;
+        max-height: none;
+    }
+
+    /* Same height with an empty or full inbox/outbox. */
+    .app-shell:has(> .sms-layout) > .sms-layout {
+        height: 390px;
+        min-height: 0;
+        max-height: none;
+        grid-template-rows: minmax(0, 1fr);
+    }
+
+    .app-shell:has(> .sms-layout) > .sms-layout > .sms-list,
+    .app-shell:has(> .sms-layout) > .sms-layout > .viewer {
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior-y: contain;
+    }
+}
